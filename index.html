@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Mr. Mandala</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Main drawing canvas -->
+  <canvas id="canvas"></canvas>
+
+  <!-- Floating control panel -->
+  <div id="controls">
+    <h2>Mr. Mandala</h2>
+
+    <!-- Segments -->
+    <div class="control-group">
+      <label for="segments">Segments: <span id="segments-val">12</span></label>
+      <input type="range" id="segments" min="2" max="48" value="12">
+    </div>
+
+    <!-- Mirror toggle -->
+    <div class="control-group toggle-row">
+      <label for="mirror">Mirror</label>
+      <input type="checkbox" id="mirror" checked>
+    </div>
+
+    <!-- Guide lines toggle -->
+    <div class="control-group toggle-row">
+      <label for="guides">Guide lines</label>
+      <input type="checkbox" id="guides" checked>
+    </div>
+
+    <hr>
+
+    <!-- Brush size -->
+    <div class="control-group">
+      <label for="brush-size">Size: <span id="brush-size-val">6</span></label>
+      <input type="range" id="brush-size" min="1" max="60" value="6">
+    </div>
+
+    <!-- Brush color -->
+    <div class="control-group">
+      <label for="brush-color">Color</label>
+      <input type="color" id="brush-color" value="#ffffff">
+    </div>
+
+    <!-- Opacity -->
+    <div class="control-group">
+      <label for="opacity">Opacity: <span id="opacity-val">1</span></label>
+      <input type="range" id="opacity" min="5" max="100" value="100">
+    </div>
+
+    <!-- Smoothing -->
+    <div class="control-group">
+      <label for="smoothing">Smoothing: <span id="smoothing-val">0.5</span></label>
+      <input type="range" id="smoothing" min="0" max="90" value="50">
+    </div>
+
+    <!-- ── Color & Visual ────────────────────── -->
+    <hr>
+    <h3 class="section-header">Color & Visual</h3>
+
+    <!-- Hue shift per segment -->
+    <div class="control-group">
+      <label for="hue-shift">Hue shift: <span id="hue-shift-val">0</span>&deg;</label>
+      <input type="range" id="hue-shift" min="0" max="360" value="0">
+    </div>
+
+    <!-- Glow / bloom -->
+    <div class="control-group">
+      <label for="glow">Glow: <span id="glow-val">0</span></label>
+      <input type="range" id="glow" min="0" max="30" value="0">
+    </div>
+
+    <!-- Radial fade -->
+    <div class="control-group">
+      <label for="radial-fade">Radial fade: <span id="radial-fade-val">0</span></label>
+      <input type="range" id="radial-fade" min="-100" max="100" value="0">
+    </div>
+
+    <!-- ── Geometric ─────────────────────────── -->
+    <hr>
+    <h3 class="section-header">Geometric</h3>
+
+    <!-- Rotation offset -->
+    <div class="control-group">
+      <label for="rotation-offset">Rotation: <span id="rotation-offset-val">0</span>&deg;</label>
+      <input type="range" id="rotation-offset" min="0" max="360" value="0">
+    </div>
+
+    <!-- Spiral twist -->
+    <div class="control-group">
+      <label for="spiral-twist">Spiral: <span id="spiral-twist-val">0</span></label>
+      <input type="range" id="spiral-twist" min="0" max="100" value="0">
+    </div>
+
+    <!-- Scale decay -->
+    <div class="control-group">
+      <label for="scale-decay">Scale decay: <span id="scale-decay-val">1.00</span></label>
+      <input type="range" id="scale-decay" min="80" max="120" value="100">
+    </div>
+
+    <hr>
+
+    <!-- Action buttons -->
+    <div class="button-row">
+      <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="btn-clear" title="Clear canvas">Clear</button>
+      <button id="btn-save" title="Save as PNG">Save PNG</button>
+    </div>
+  </div>
+
+  <!-- Toggle button to show/hide controls on mobile -->
+  <button id="toggle-controls" title="Toggle controls">&#9776;</button>
+
+  <script src="app.js"></script>
+</body>
+</html>
