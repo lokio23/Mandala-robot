@@ -36,6 +36,10 @@ const spiralTwistVal      = document.getElementById('spiral-twist-val');
 const scaleDecayInput     = document.getElementById('scale-decay');
 const scaleDecayVal       = document.getElementById('scale-decay-val');
 
+const gridTypeInput = document.getElementById('grid-type');
+const gridSizeInput = document.getElementById('grid-size');
+const gridSizeVal   = document.getElementById('grid-size-val');
+
 const btnUndo  = document.getElementById('btn-undo');
 const btnClear = document.getElementById('btn-clear');
 const btnSave  = document.getElementById('btn-save');
@@ -58,6 +62,12 @@ let radialFade    = 0;     // -1 to 1
 let rotationOffset = 0;    // radians
 let spiralTwist    = 0;    // 0 to 1
 let scaleDecay     = 1.0;  // 0.8 to 1.2
+
+// Grid overlay
+let gridType = 'off';          // 'off' | 'square' | 'triangle' | 'hexagon'
+let gridSize = 80;             // cell size in CSS pixels
+let gridCentersCache = null;   // cached array of {x, y} cell centers
+let gridCentersKey   = '';     // invalidation key
 
 let drawing    = false;        // is the user currently drawing?
 let lastX      = 0;            // previous cursor x (smoothed)
@@ -123,6 +133,215 @@ function drawGuides() {
   ctx.restore();
 }
 
+// ── Grid overlay ─────────────────────────────────────────────
+
+/** Draw the selected grid overlay (square / triangle / hexagon) */
+function drawGrid() {
+  if (gridType === 'off') return;
+
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 0.5;
+
+  switch (gridType) {
+    case 'square':   drawSquareGrid(w, h);   break;
+    case 'triangle': drawTriangleGrid(w, h); break;
+    case 'hexagon':  drawHexagonGrid(w, h);  break;
+  }
+
+  ctx.restore();
+}
+
+/** Square grid — horizontal + vertical lines centered on (cx, cy) */
+function drawSquareGrid(w, h) {
+  ctx.beginPath();
+
+  // Horizontal lines
+  const startY = cy % gridSize;
+  for (let y = startY; y <= h; y += gridSize) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+  }
+
+  // Vertical lines
+  const startX = cx % gridSize;
+  for (let x = startX; x <= w; x += gridSize) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+  }
+
+  ctx.stroke();
+}
+
+/** Triangle grid — 3 families of parallel lines at 0°, 60°, 120° */
+function drawTriangleGrid(w, h) {
+  const s = gridSize;
+  const rowH = s * Math.sqrt(3) / 2;
+  const diag = Math.sqrt(w * w + h * h);
+
+  ctx.beginPath();
+
+  // Set 1: Horizontal lines (0°)
+  const startY = cy % rowH;
+  for (let y = startY; y <= h; y += rowH) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+  }
+
+  // Set 2: Lines at 60°
+  const cos60 = Math.cos(Math.PI / 3);
+  const sin60 = Math.sin(Math.PI / 3);
+  const numLines = Math.ceil(diag / rowH);
+
+  for (let i = -numLines; i <= numLines; i++) {
+    const ox = cx + i * rowH * sin60;
+    const oy = cy - i * rowH * cos60;
+    ctx.moveTo(ox - cos60 * diag, oy - sin60 * diag);
+    ctx.lineTo(ox + cos60 * diag, oy + sin60 * diag);
+  }
+
+  // Set 3: Lines at 120°
+  const cos120 = Math.cos(2 * Math.PI / 3);
+  const sin120 = Math.sin(2 * Math.PI / 3);
+
+  for (let i = -numLines; i <= numLines; i++) {
+    const ox = cx + i * rowH * sin120;
+    const oy = cy - i * rowH * cos120;
+    ctx.moveTo(ox - cos120 * diag, oy - sin120 * diag);
+    ctx.lineTo(ox + cos120 * diag, oy + sin120 * diag);
+  }
+
+  ctx.stroke();
+}
+
+/** Hexagon grid — flat-top hexagons tiling the canvas */
+function drawHexagonGrid(w, h) {
+  const r = gridSize / 2;
+  const hexH = Math.sqrt(3) * r;
+  const colStep = 1.5 * r;
+  const rowStep = hexH;
+
+  const cols = Math.ceil(w / colStep) + 2;
+  const rows = Math.ceil(h / rowStep) + 2;
+  const startCol = -Math.ceil(cx / colStep) - 1;
+  const startRow = -Math.ceil(cy / rowStep) - 1;
+
+  ctx.beginPath();
+  for (let col = startCol; col <= startCol + cols + 1; col++) {
+    for (let row = startRow; row <= startRow + rows + 1; row++) {
+      const x = cx + col * colStep;
+      const yOffset = (col % 2 !== 0) ? hexH / 2 : 0;
+      const y = cy + row * rowStep + yOffset;
+      addHexToPath(x, y, r);
+    }
+  }
+  ctx.stroke();
+}
+
+/** Add a single flat-top hexagon to the current path */
+function addHexToPath(x, y, r) {
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI / 3) * i;
+    const px = x + r * Math.cos(angle);
+    const py = y + r * Math.sin(angle);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+/** Draw all visual overlays (guides + grid) */
+function drawAllOverlays() {
+  drawGuides();
+  drawGrid();
+}
+
+// ── Grid cell centers (for tiling) ──────────────────────────
+
+/**
+ * Compute the center of every visible grid cell.
+ * Returns [] when grid is 'off'. Results are cached.
+ */
+function getGridCenters() {
+  if (gridType === 'off') return [];
+
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const key = `${gridType}|${gridSize}|${w}|${h}`;
+
+  if (gridCentersCache && gridCentersKey === key) {
+    return gridCentersCache;
+  }
+
+  const centers = [];
+  const pad = gridSize;
+
+  switch (gridType) {
+    case 'square': {
+      const minCol = Math.floor((-cx - pad) / gridSize);
+      const maxCol = Math.ceil((w - cx + pad) / gridSize);
+      const minRow = Math.floor((-cy - pad) / gridSize);
+      const maxRow = Math.ceil((h - cy + pad) / gridSize);
+      for (let col = minCol; col <= maxCol; col++) {
+        for (let row = minRow; row <= maxRow; row++) {
+          centers.push({ x: cx + col * gridSize, y: cy + row * gridSize });
+        }
+      }
+      break;
+    }
+
+    case 'triangle': {
+      const s = gridSize;
+      const rowH = s * Math.sqrt(3) / 2;
+      const minRow = Math.floor((-cy - pad) / rowH);
+      const maxRow = Math.ceil((h - cy + pad) / rowH);
+      const minCol = Math.floor((-cx - pad) / (s / 2));
+      const maxCol = Math.ceil((w - cx + pad) / (s / 2));
+
+      for (let row = minRow; row <= maxRow; row++) {
+        for (let col = minCol; col <= maxCol; col++) {
+          const isUp = (row + col) % 2 === 0;
+          const triCenterX = cx + col * (s / 2) + s / 4;
+          const triCenterY = isUp
+            ? cy + row * rowH + rowH / 3
+            : cy + row * rowH + 2 * rowH / 3;
+          centers.push({ x: triCenterX, y: triCenterY });
+        }
+      }
+      break;
+    }
+
+    case 'hexagon': {
+      const r = gridSize / 2;
+      const hexH = Math.sqrt(3) * r;
+      const colStep = 1.5 * r;
+      const rowStep = hexH;
+
+      const cols = Math.ceil(w / colStep) + 2;
+      const rows = Math.ceil(h / rowStep) + 2;
+      const startCol = -Math.ceil(cx / colStep) - 1;
+      const startRow = -Math.ceil(cy / rowStep) - 1;
+
+      for (let col = startCol; col <= startCol + cols + 1; col++) {
+        for (let row = startRow; row <= startRow + rows + 1; row++) {
+          const x = cx + col * colStep;
+          const yOffset = (col % 2 !== 0) ? hexH / 2 : 0;
+          const y = cy + row * rowStep + yOffset;
+          centers.push({ x, y });
+        }
+      }
+      break;
+    }
+  }
+
+  gridCentersCache = centers;
+  gridCentersKey = key;
+  return centers;
+}
+
 // ── Undo system ─────────────────────────────────────────────
 
 /** Push the current canvas state onto the undo stack */
@@ -177,7 +396,11 @@ function hslToCSS(h, s, l) {
  * Each segment is rotated around the center; if mirror is on,
  * a horizontally-flipped copy is also drawn within each segment.
  */
-function drawMandalaStroke(x1, y1, x2, y2) {
+function drawMandalaStroke(x1, y1, x2, y2, centerX, centerY, tileMaxRadius) {
+  const useCX = (centerX !== undefined) ? centerX : cx;
+  const useCY = (centerY !== undefined) ? centerY : cy;
+  const useMaxR = (tileMaxRadius !== undefined) ? tileMaxRadius : maxRadius;
+
   const step = (Math.PI * 2) / segments;
 
   ctx.save();
@@ -198,10 +421,10 @@ function drawMandalaStroke(x1, y1, x2, y2) {
   }
 
   // Convert points relative to center
-  const dx1 = x1 - cx;
-  const dy1 = y1 - cy;
-  const dx2 = x2 - cx;
-  const dy2 = y2 - cy;
+  const dx1 = x1 - useCX;
+  const dy1 = y1 - useCY;
+  const dx2 = x2 - useCX;
+  const dy2 = y2 - useCY;
 
   // ── Radial fade: compute once from midpoint distance ───
   let fadeAlpha = opacity;
@@ -209,7 +432,7 @@ function drawMandalaStroke(x1, y1, x2, y2) {
     const midX = (dx1 + dx2) / 2;
     const midY = (dy1 + dy2) / 2;
     const dist = Math.sqrt(midX * midX + midY * midY);
-    const t = maxRadius > 0 ? dist / maxRadius : 0;
+    const t = useMaxR > 0 ? dist / useMaxR : 0;
 
     if (radialFade > 0) {
       fadeAlpha = opacity * (1 - t * radialFade);
@@ -247,21 +470,21 @@ function drawMandalaStroke(x1, y1, x2, y2) {
       // Spiral: each endpoint gets its own twist based on distance
       const dist1 = Math.sqrt(sdx1 * sdx1 + sdy1 * sdy1);
       const dist2 = Math.sqrt(sdx2 * sdx2 + sdy2 * sdy2);
-      const a1 = baseAngle + spiralTwist * (dist1 / (maxRadius || 1)) * Math.PI;
-      const a2 = baseAngle + spiralTwist * (dist2 / (maxRadius || 1)) * Math.PI;
+      const a1 = baseAngle + spiralTwist * (dist1 / (useMaxR || 1)) * Math.PI;
+      const a2 = baseAngle + spiralTwist * (dist2 / (useMaxR || 1)) * Math.PI;
 
       const cos1 = Math.cos(a1), sin1 = Math.sin(a1);
       const cos2 = Math.cos(a2), sin2 = Math.sin(a2);
 
       ctx.beginPath();
-      ctx.moveTo(cx + sdx1 * cos1 - sdy1 * sin1, cy + sdx1 * sin1 + sdy1 * cos1);
-      ctx.lineTo(cx + sdx2 * cos2 - sdy2 * sin2, cy + sdx2 * sin2 + sdy2 * cos2);
+      ctx.moveTo(useCX + sdx1 * cos1 - sdy1 * sin1, useCY + sdx1 * sin1 + sdy1 * cos1);
+      ctx.lineTo(useCX + sdx2 * cos2 - sdy2 * sin2, useCY + sdx2 * sin2 + sdy2 * cos2);
       ctx.stroke();
 
       if (mirror) {
         ctx.beginPath();
-        ctx.moveTo(cx + sdx1 * cos1 + sdy1 * sin1, cy + sdx1 * sin1 - sdy1 * cos1);
-        ctx.lineTo(cx + sdx2 * cos2 + sdy2 * sin2, cy + sdx2 * sin2 - sdy2 * cos2);
+        ctx.moveTo(useCX + sdx1 * cos1 + sdy1 * sin1, useCY + sdx1 * sin1 - sdy1 * cos1);
+        ctx.lineTo(useCX + sdx2 * cos2 + sdy2 * sin2, useCY + sdx2 * sin2 - sdy2 * cos2);
         ctx.stroke();
       }
     } else {
@@ -270,20 +493,48 @@ function drawMandalaStroke(x1, y1, x2, y2) {
       const sin = Math.sin(baseAngle);
 
       ctx.beginPath();
-      ctx.moveTo(cx + sdx1 * cos - sdy1 * sin, cy + sdx1 * sin + sdy1 * cos);
-      ctx.lineTo(cx + sdx2 * cos - sdy2 * sin, cy + sdx2 * sin + sdy2 * cos);
+      ctx.moveTo(useCX + sdx1 * cos - sdy1 * sin, useCY + sdx1 * sin + sdy1 * cos);
+      ctx.lineTo(useCX + sdx2 * cos - sdy2 * sin, useCY + sdx2 * sin + sdy2 * cos);
       ctx.stroke();
 
       if (mirror) {
         ctx.beginPath();
-        ctx.moveTo(cx + sdx1 * cos + sdy1 * sin, cy + sdx1 * sin - sdy1 * cos);
-        ctx.lineTo(cx + sdx2 * cos + sdy2 * sin, cy + sdx2 * sin - sdy2 * cos);
+        ctx.moveTo(useCX + sdx1 * cos + sdy1 * sin, useCY + sdx1 * sin - sdy1 * cos);
+        ctx.lineTo(useCX + sdx2 * cos + sdy2 * sin, useCY + sdx2 * sin - sdy2 * cos);
         ctx.stroke();
       }
     }
   }
 
   ctx.restore();
+}
+
+/**
+ * Draw the mandala stroke tiled across all grid cells (if grid active),
+ * or once at the main center (if grid is off).
+ */
+function drawTiledMandalaStroke(x1, y1, x2, y2) {
+  const centers = getGridCenters();
+
+  if (centers.length === 0) {
+    // Grid is off — original single-center behavior
+    drawMandalaStroke(x1, y1, x2, y2);
+    return;
+  }
+
+  // User's stroke as offset from the main center
+  const ox1 = x1 - cx, oy1 = y1 - cy;
+  const ox2 = x2 - cx, oy2 = y2 - cy;
+  const tileR = gridSize / 2;
+
+  for (let i = 0; i < centers.length; i++) {
+    const c = centers[i];
+    drawMandalaStroke(
+      c.x + ox1, c.y + oy1,
+      c.x + ox2, c.y + oy2,
+      c.x, c.y, tileR
+    );
+  }
 }
 
 // ── Input handling ──────────────────────────────────────────
@@ -332,7 +583,7 @@ function drawFrame() {
   pendingDraw = false;
   if (!drawing) return;
 
-  drawMandalaStroke(lastX, lastY, smoothX, smoothY);
+  drawTiledMandalaStroke(lastX, lastY, smoothX, smoothY);
   lastX = smoothX;
   lastY = smoothY;
 }
@@ -358,7 +609,7 @@ function captureContent() {
  */
 function finishStroke() {
   captureContent();
-  drawGuides();
+  drawAllOverlays();
 }
 
 /**
@@ -367,7 +618,7 @@ function finishStroke() {
  */
 function refreshGuides() {
   if (contentData) ctx.putImageData(contentData, 0, 0);
-  drawGuides();
+  drawAllOverlays();
 }
 
 // ── Control bindings ────────────────────────────────────────
@@ -384,6 +635,19 @@ mirrorInput.addEventListener('change', () => {
 
 guidesInput.addEventListener('change', () => {
   showGuides = guidesInput.checked;
+  refreshGuides();
+});
+
+gridTypeInput.addEventListener('change', () => {
+  gridType = gridTypeInput.value;
+  gridCentersCache = null;
+  refreshGuides();
+});
+
+gridSizeInput.addEventListener('input', () => {
+  gridSize = parseInt(gridSizeInput.value, 10);
+  gridSizeVal.textContent = gridSize;
+  gridCentersCache = null;
   refreshGuides();
 });
 
@@ -454,7 +718,7 @@ btnClear.addEventListener('click', () => {
   pushUndo();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   captureContent();
-  drawGuides();
+  drawAllOverlays();
 });
 
 btnUndo.addEventListener('click', () => {
@@ -471,8 +735,8 @@ btnSave.addEventListener('click', () => {
   link.href = canvas.toDataURL('image/png');
   link.click();
 
-  // Re-overlay guides
-  drawGuides();
+  // Re-overlay guides + grid
+  drawAllOverlays();
 });
 
 // Keyboard shortcut: Ctrl/Cmd + Z for undo
@@ -532,6 +796,7 @@ window.addEventListener('resize', () => {
   if (contentData) ctx.putImageData(contentData, 0, 0);
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   resizeCanvas();
+  gridCentersCache = null;
   ctx.putImageData(img, 0, 0);
   cx = window.innerWidth / 2;
   cy = window.innerHeight / 2;
@@ -543,7 +808,7 @@ function init() {
   resizeCanvas();
   // Capture the clean (empty) canvas as contentData before overlaying guides
   captureContent();
-  drawGuides();
+  drawAllOverlays();
 }
 
 // The script runs at end-of-body, but some browsers may not have
