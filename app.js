@@ -40,9 +40,21 @@ const gridTypeInput = document.getElementById('grid-type');
 const gridSizeInput = document.getElementById('grid-size');
 const gridSizeVal   = document.getElementById('grid-size-val');
 
+const bgColorInput    = document.getElementById('bg-color');
+const toolModeInput   = document.getElementById('tool-mode');
+const brushTypeInput  = document.getElementById('brush-type');
+const stampShapeInput = document.getElementById('stamp-shape');
+const stampShapeGroup = document.getElementById('stamp-shape-group');
+const stampAlignInput    = document.getElementById('stamp-align');
+const stampAlignGroup    = document.getElementById('stamp-align-group');
+const brushRotationInput = document.getElementById('brush-rotation');
+const brushRotationVal   = document.getElementById('brush-rotation-val');
+const brushTypeGroup     = document.getElementById('brush-type-group');
+
 const btnUndo  = document.getElementById('btn-undo');
 const btnClear = document.getElementById('btn-clear');
 const btnSave  = document.getElementById('btn-save');
+const btnReset = document.getElementById('btn-reset');
 
 // ── State ───────────────────────────────────────────────────
 let segments   = 12;
@@ -50,6 +62,12 @@ let mirror     = true;
 let showGuides = true;
 let brushSize  = 6;
 let brushColor = '#ffffff';
+let bgColor    = '#0a0a12';
+let brushType  = 'normal';   // 'normal' | 'dashed' | 'dotted' | 'airbrush'
+let toolMode   = 'brush';    // 'brush' | 'stamp'
+let stampShape = 'circle';   // 'circle' | 'star' | 'triangle' | 'diamond' | 'hexagon' | 'petal'
+let stampAlign = false;      // rotate stamps to align with segment angle
+let brushRotation = 0;       // manual rotation in radians
 let opacity    = 1;
 let smoothing  = 0.5;
 
@@ -76,6 +94,14 @@ let smoothX    = 0;            // smoothed x position
 let smoothY    = 0;            // smoothed y position
 let pendingDraw = false;       // whether we have a frame queued
 let rafId      = null;         // requestAnimationFrame id
+let dashAccum  = 0;            // cumulative distance for dashed brush spacing
+let shiftDown  = false;        // is Shift held? (for 45° snap)
+let strokeOriginX = 0;         // where the current stroke started
+let strokeOriginY = 0;
+
+let cursorX = 0;               // cursor position for preview
+let cursorY = 0;
+let cursorOnCanvas = false;    // is the mouse hovering over the canvas?
 
 // Center of the canvas (updated on resize)
 let cx = 0;
@@ -150,6 +176,15 @@ function drawGrid() {
     case 'square':   drawSquareGrid(w, h);   break;
     case 'triangle': drawTriangleGrid(w, h); break;
     case 'hexagon':  drawHexagonGrid(w, h);  break;
+  }
+
+  // Draw small dots at each grid cell center
+  const centers = getGridCenters();
+  ctx.fillStyle = 'rgba(0,240,255,0.25)';
+  for (let i = 0; i < centers.length; i++) {
+    ctx.beginPath();
+    ctx.arc(centers[i].x, centers[i].y, 2.5, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   ctx.restore();
@@ -392,6 +427,122 @@ function hslToCSS(h, s, l) {
 // ── Drawing engine ──────────────────────────────────────────
 
 /**
+ * Draw a single segment stroke using the current brush type.
+ * Called from drawMandalaStroke for each segment's rotated endpoints.
+ */
+function drawSegmentStroke(p1x, p1y, p2x, p2y) {
+  switch (brushType) {
+    case 'dashed':
+      // Spacing is handled at the frame level (drawFrame skips gap frames).
+      // Here we just draw a normal line segment for the "on" phase.
+      ctx.beginPath();
+      ctx.moveTo(p1x, p1y);
+      ctx.lineTo(p2x, p2y);
+      ctx.stroke();
+      break;
+
+    case 'dotted':
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath();
+      ctx.arc(p2x, p2y, brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+
+    case 'airbrush': {
+      ctx.fillStyle = ctx.strokeStyle;
+      const count = Math.max(3, Math.floor(brushSize * 1.5));
+      const radius = brushSize * 2;
+      for (let n = 0; n < count; n++) {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = Math.random() * radius;
+        const dx = Math.cos(angle) * dist;
+        const dy = Math.sin(angle) * dist;
+        const dotR = Math.random() * (brushSize / 4) + 0.5;
+        ctx.beginPath();
+        ctx.arc(p2x + dx, p2y + dy, dotR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    }
+
+    default: // 'normal'
+      ctx.beginPath();
+      ctx.moveTo(p1x, p1y);
+      ctx.lineTo(p2x, p2y);
+      ctx.stroke();
+      break;
+  }
+}
+
+// ── Shape path builders (for stamp tool) ─────────────────────
+
+function shapeCirclePath(r) {
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+}
+
+function shapeStarPath(r) {
+  const spikes = 5;
+  const innerR = r * 0.4;
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (i * Math.PI) / spikes - Math.PI / 2;
+    const rad = (i % 2 === 0) ? r : innerR;
+    const px = Math.cos(angle) * rad;
+    const py = Math.sin(angle) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function shapeTrianglePath(r) {
+  for (let i = 0; i < 3; i++) {
+    const angle = (i * 2 * Math.PI) / 3 - Math.PI / 2;
+    const px = Math.cos(angle) * r;
+    const py = Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function shapeDiamondPath(r) {
+  ctx.moveTo(0, -r);
+  ctx.lineTo(r * 0.6, 0);
+  ctx.lineTo(0, r);
+  ctx.lineTo(-r * 0.6, 0);
+  ctx.closePath();
+}
+
+function shapeHexagonPath(r) {
+  for (let i = 0; i < 6; i++) {
+    const angle = (i * Math.PI) / 3;
+    const px = Math.cos(angle) * r;
+    const py = Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function shapePetalPath(r) {
+  ctx.moveTo(0, -r);
+  ctx.quadraticCurveTo(r * 0.8, 0, 0, r);
+  ctx.quadraticCurveTo(-r * 0.8, 0, 0, -r);
+  ctx.closePath();
+}
+
+function drawShapePath(shape, r) {
+  switch (shape) {
+    case 'circle':   shapeCirclePath(r);   break;
+    case 'star':     shapeStarPath(r);     break;
+    case 'triangle': shapeTrianglePath(r); break;
+    case 'diamond':  shapeDiamondPath(r);  break;
+    case 'hexagon':  shapeHexagonPath(r);  break;
+    case 'petal':    shapePetalPath(r);    break;
+  }
+}
+
+/**
  * Draw a line segment replicated into all mandala segments.
  * Each segment is rotated around the center; if mirror is on,
  * a horizontally-flipped copy is also drawn within each segment.
@@ -476,32 +627,32 @@ function drawMandalaStroke(x1, y1, x2, y2, centerX, centerY, tileMaxRadius) {
       const cos1 = Math.cos(a1), sin1 = Math.sin(a1);
       const cos2 = Math.cos(a2), sin2 = Math.sin(a2);
 
-      ctx.beginPath();
-      ctx.moveTo(useCX + sdx1 * cos1 - sdy1 * sin1, useCY + sdx1 * sin1 + sdy1 * cos1);
-      ctx.lineTo(useCX + sdx2 * cos2 - sdy2 * sin2, useCY + sdx2 * sin2 + sdy2 * cos2);
-      ctx.stroke();
+      drawSegmentStroke(
+        useCX + sdx1 * cos1 - sdy1 * sin1, useCY + sdx1 * sin1 + sdy1 * cos1,
+        useCX + sdx2 * cos2 - sdy2 * sin2, useCY + sdx2 * sin2 + sdy2 * cos2
+      );
 
       if (mirror) {
-        ctx.beginPath();
-        ctx.moveTo(useCX + sdx1 * cos1 + sdy1 * sin1, useCY + sdx1 * sin1 - sdy1 * cos1);
-        ctx.lineTo(useCX + sdx2 * cos2 + sdy2 * sin2, useCY + sdx2 * sin2 - sdy2 * cos2);
-        ctx.stroke();
+        drawSegmentStroke(
+          useCX + sdx1 * cos1 + sdy1 * sin1, useCY + sdx1 * sin1 - sdy1 * cos1,
+          useCX + sdx2 * cos2 + sdy2 * sin2, useCY + sdx2 * sin2 - sdy2 * cos2
+        );
       }
     } else {
       // Standard rotation (no spiral)
       const cos = Math.cos(baseAngle);
       const sin = Math.sin(baseAngle);
 
-      ctx.beginPath();
-      ctx.moveTo(useCX + sdx1 * cos - sdy1 * sin, useCY + sdx1 * sin + sdy1 * cos);
-      ctx.lineTo(useCX + sdx2 * cos - sdy2 * sin, useCY + sdx2 * sin + sdy2 * cos);
-      ctx.stroke();
+      drawSegmentStroke(
+        useCX + sdx1 * cos - sdy1 * sin, useCY + sdx1 * sin + sdy1 * cos,
+        useCX + sdx2 * cos - sdy2 * sin, useCY + sdx2 * sin + sdy2 * cos
+      );
 
       if (mirror) {
-        ctx.beginPath();
-        ctx.moveTo(useCX + sdx1 * cos + sdy1 * sin, useCY + sdx1 * sin - sdy1 * cos);
-        ctx.lineTo(useCX + sdx2 * cos + sdy2 * sin, useCY + sdx2 * sin - sdy2 * cos);
-        ctx.stroke();
+        drawSegmentStroke(
+          useCX + sdx1 * cos + sdy1 * sin, useCY + sdx1 * sin - sdy1 * cos,
+          useCX + sdx2 * cos + sdy2 * sin, useCY + sdx2 * sin - sdy2 * cos
+        );
       }
     }
   }
@@ -537,7 +688,153 @@ function drawTiledMandalaStroke(x1, y1, x2, y2) {
   }
 }
 
+// ── Stamp tool ──────────────────────────────────────────────
+
+/**
+ * Place a shape at (x, y) replicated into all mandala segments.
+ * Uses the same segment rotation, hue shift, radial fade, scale decay,
+ * rotation offset, and mirror logic as drawMandalaStroke.
+ */
+function drawMandalaStamp(x, y, centerX, centerY, tileMaxRadius) {
+  const useCX = (centerX !== undefined) ? centerX : cx;
+  const useCY = (centerY !== undefined) ? centerY : cy;
+  const useMaxR = (tileMaxRadius !== undefined) ? tileMaxRadius : maxRadius;
+
+  const step = (Math.PI * 2) / segments;
+  const r = brushSize;
+
+  ctx.save();
+  ctx.lineWidth = Math.max(1, brushSize / 6);
+  ctx.lineCap   = 'round';
+  ctx.lineJoin  = 'round';
+
+  if (glow > 0) {
+    ctx.shadowBlur  = glow;
+    ctx.shadowColor = brushColor;
+  }
+
+  let baseHSL = null;
+  if (hueShift > 0) {
+    baseHSL = hexToHSL(brushColor);
+  }
+
+  const dx = x - useCX;
+  const dy = y - useCY;
+
+  // Radial fade
+  let fadeAlpha = opacity;
+  if (radialFade !== 0) {
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const t = useMaxR > 0 ? dist / useMaxR : 0;
+    if (radialFade > 0) {
+      fadeAlpha = opacity * (1 - t * radialFade);
+    } else {
+      fadeAlpha = opacity * (1 - (1 - t) * (-radialFade));
+    }
+    fadeAlpha = Math.max(0, Math.min(1, fadeAlpha));
+  }
+
+  for (let i = 0; i < segments; i++) {
+    // Per-segment color
+    let segColor;
+    if (baseHSL) {
+      const shiftedHue = baseHSL.h + i * hueShift;
+      segColor = hslToCSS(shiftedHue, baseHSL.s, baseHSL.l);
+    } else {
+      segColor = brushColor;
+    }
+    ctx.strokeStyle = segColor;
+    ctx.fillStyle   = segColor;
+    if (glow > 0) ctx.shadowColor = segColor;
+    ctx.globalAlpha = fadeAlpha;
+
+    // Scale decay
+    let sdx = dx, sdy = dy, sr = r;
+    if (scaleDecay !== 1.0) {
+      const sf = Math.pow(scaleDecay, i);
+      sdx *= sf; sdy *= sf; sr *= sf;
+    }
+
+    const baseAngle = step * i + rotationOffset;
+    const cos = Math.cos(baseAngle);
+    const sin = Math.sin(baseAngle);
+
+    const px = useCX + sdx * cos - sdy * sin;
+    const py = useCY + sdx * sin + sdy * cos;
+
+    // Draw shape
+    ctx.save();
+    ctx.translate(px, py);
+    if (stampAlign) {
+      const radialAngle = Math.atan2(py - useCY, px - useCX);
+      ctx.rotate(radialAngle + Math.PI / 2 + brushRotation);
+    } else if (brushRotation !== 0) {
+      ctx.rotate(brushRotation);
+    }
+    ctx.beginPath();
+    drawShapePath(stampShape, sr);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Mirror
+    if (mirror) {
+      const mpx = useCX + sdx * cos + sdy * sin;
+      const mpy = useCY + sdx * sin - sdy * cos;
+
+      ctx.save();
+      ctx.translate(mpx, mpy);
+      if (stampAlign) {
+        const radialAngle = Math.atan2(mpy - useCY, mpx - useCX);
+        ctx.rotate(radialAngle + Math.PI / 2 + brushRotation);
+      } else if (brushRotation !== 0) {
+        ctx.rotate(brushRotation);
+      }
+      ctx.scale(-1, 1);
+      ctx.beginPath();
+      drawShapePath(stampShape, sr);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+}
+
+/** Tile stamp placement across all grid cells */
+function drawTiledMandalaStamp(x, y) {
+  const centers = getGridCenters();
+
+  if (centers.length === 0) {
+    drawMandalaStamp(x, y);
+    return;
+  }
+
+  const ox = x - cx;
+  const oy = y - cy;
+  const tileR = gridSize / 2;
+
+  for (let i = 0; i < centers.length; i++) {
+    const c = centers[i];
+    drawMandalaStamp(c.x + ox, c.y + oy, c.x, c.y, tileR);
+  }
+}
+
 // ── Input handling ──────────────────────────────────────────
+
+/** Snap a point to the nearest 45° angle relative to an origin */
+function snapTo45(rawX, rawY, originX, originY) {
+  const dx = rawX - originX;
+  const dy = rawY - originY;
+  const angle = Math.atan2(dy, dx);
+  const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  return {
+    x: originX + Math.cos(snapped) * dist,
+    y: originY + Math.sin(snapped) * dist
+  };
+}
 
 /** Get pointer position from mouse or touch event */
 function getPointerPos(e) {
@@ -555,12 +852,41 @@ function onPointerDown(e) {
   pushUndo();
   lastX = smoothX = pos.x;
   lastY = smoothY = pos.y;
+  strokeOriginX = pos.x;
+  strokeOriginY = pos.y;
+  dashAccum = 0;
+
+  // Draw immediately on click (so clicking without moving still leaves a mark)
+  if (toolMode === 'stamp') {
+    drawTiledMandalaStamp(pos.x, pos.y);
+  } else {
+    // Brush: draw a dot at click position (zero-length stroke with round cap = dot)
+    drawTiledMandalaStroke(pos.x, pos.y, pos.x, pos.y);
+  }
 }
 
 function onPointerMove(e) {
-  if (!drawing) return;
+  // Always track cursor position for preview
+  const rawPos = getPointerPos(e);
+  cursorX = rawPos.x;
+  cursorY = rawPos.y;
+
+  if (!drawing) {
+    // Redraw overlays + cursor preview (no stroke)
+    if (contentData) ctx.putImageData(contentData, 0, 0);
+    drawAllOverlays();
+    drawCursorPreview();
+    return;
+  }
+
   e.preventDefault();
-  const pos = getPointerPos(e);
+  let pos = { x: rawPos.x, y: rawPos.y };
+
+  // Snap to nearest 45° angle when Shift is held
+  if (shiftDown) {
+    const snapped = snapTo45(pos.x, pos.y, strokeOriginX, strokeOriginY);
+    pos = snapped;
+  }
 
   // Apply exponential smoothing to reduce jitter
   smoothX = smoothX + (1 - smoothing) * (pos.x - smoothX);
@@ -583,7 +909,25 @@ function drawFrame() {
   pendingDraw = false;
   if (!drawing) return;
 
-  drawTiledMandalaStroke(lastX, lastY, smoothX, smoothY);
+  if (toolMode === 'brush') {
+    if (brushType === 'dashed') {
+      // Track cumulative distance; draw during "dash" phase, skip during "gap" phase
+      const ddx = smoothX - lastX;
+      const ddy = smoothY - lastY;
+      dashAccum += Math.sqrt(ddx * ddx + ddy * ddy);
+      const dashLen = brushSize * 4;
+      const gapLen  = brushSize * 3;
+      const cycle   = dashLen + gapLen;
+      if ((dashAccum % cycle) < dashLen) {
+        drawTiledMandalaStroke(lastX, lastY, smoothX, smoothY);
+      }
+    } else {
+      drawTiledMandalaStroke(lastX, lastY, smoothX, smoothY);
+    }
+  } else if (toolMode === 'stamp') {
+    drawTiledMandalaStamp(smoothX, smoothY);
+  }
+
   lastX = smoothX;
   lastY = smoothY;
 }
@@ -610,6 +954,7 @@ function captureContent() {
 function finishStroke() {
   captureContent();
   drawAllOverlays();
+  drawCursorPreview();
 }
 
 /**
@@ -619,6 +964,57 @@ function finishStroke() {
 function refreshGuides() {
   if (contentData) ctx.putImageData(contentData, 0, 0);
   drawAllOverlays();
+  drawCursorPreview();
+}
+
+/**
+ * Draw a ghost preview of the current brush/stamp at the cursor position.
+ * Shown at low opacity so the user can see size, shape, and position.
+ */
+function drawCursorPreview() {
+  if (!cursorOnCanvas) return;
+
+  ctx.save();
+  ctx.globalAlpha = 0.3;
+
+  if (toolMode === 'stamp') {
+    // Draw the stamp shape outline at cursor
+    ctx.translate(cursorX, cursorY);
+    if (stampAlign) {
+      const radialAngle = Math.atan2(cursorY - cy, cursorX - cx);
+      ctx.rotate(radialAngle + Math.PI / 2 + brushRotation);
+    } else if (brushRotation !== 0) {
+      ctx.rotate(brushRotation);
+    }
+    ctx.strokeStyle = brushColor;
+    ctx.fillStyle = brushColor;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.15;
+    ctx.beginPath();
+    drawShapePath(stampShape, brushSize);
+    ctx.fill();
+    ctx.globalAlpha = 0.4;
+    ctx.stroke();
+  } else {
+    // Brush mode — circle showing brush size
+    ctx.strokeStyle = brushColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cursorX, cursorY, brushSize / 2, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // For airbrush, also show the scatter radius
+    if (brushType === 'airbrush') {
+      ctx.setLineDash([3, 3]);
+      ctx.globalAlpha = 0.15;
+      ctx.beginPath();
+      ctx.arc(cursorX, cursorY, brushSize * 2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  ctx.restore();
 }
 
 // ── Control bindings ────────────────────────────────────────
@@ -658,6 +1054,36 @@ brushSizeInput.addEventListener('input', () => {
 
 brushColorInput.addEventListener('input', () => {
   brushColor = brushColorInput.value;
+});
+
+bgColorInput.addEventListener('input', () => {
+  bgColor = bgColorInput.value;
+  document.body.style.background = bgColor;
+});
+
+toolModeInput.addEventListener('change', () => {
+  toolMode = toolModeInput.value;
+  stampShapeGroup.style.display = (toolMode === 'stamp') ? '' : 'none';
+  stampAlignGroup.style.display = (toolMode === 'stamp') ? '' : 'none';
+  brushTypeGroup.style.display  = (toolMode === 'brush') ? '' : 'none';
+});
+
+brushTypeInput.addEventListener('change', () => {
+  brushType = brushTypeInput.value;
+});
+
+stampShapeInput.addEventListener('change', () => {
+  stampShape = stampShapeInput.value;
+});
+
+stampAlignInput.addEventListener('change', () => {
+  stampAlign = stampAlignInput.checked;
+});
+
+brushRotationInput.addEventListener('input', () => {
+  const raw = parseInt(brushRotationInput.value, 10);
+  brushRotation = raw * Math.PI / 180;
+  brushRotationVal.textContent = raw;
 });
 
 opacityInput.addEventListener('input', () => {
@@ -730,22 +1156,119 @@ btnSave.addEventListener('click', () => {
   // Strip guides before saving
   if (contentData) ctx.putImageData(contentData, 0, 0);
 
+  const dpr = window.devicePixelRatio || 1;
+  let cropW, cropH;
+
+  if (gridType === 'square') {
+    // Snap to whole grid cells so the export tiles seamlessly
+    const cellPx = gridSize * dpr;
+    const maxSide = Math.min(canvas.width, canvas.height);
+    const cells = Math.floor(maxSide / cellPx);
+    cropW = cropH = cells * cellPx;
+
+  } else if (gridType === 'hexagon') {
+    const r = gridSize / 2;
+    const colStepPx = 1.5 * r * dpr;
+    const rowStepPx = Math.sqrt(3) * r * dpr;
+    // Even number of cols/rows needed for hex offset pattern
+    const cols = Math.floor(canvas.width / colStepPx);
+    const evenCols = cols - (cols % 2);
+    cropW = evenCols * colStepPx;
+    const rows = Math.floor(canvas.height / rowStepPx);
+    const evenRows = rows - (rows % 2);
+    cropH = evenRows * rowStepPx;
+
+  } else if (gridType === 'triangle') {
+    const colStepPx = (gridSize / 2) * dpr;
+    const rowStepPx = (gridSize * Math.sqrt(3) / 2) * dpr;
+    // Even number of cols/rows for alternating triangle pattern
+    const cols = Math.floor(canvas.width / colStepPx);
+    const evenCols = cols - (cols % 2);
+    cropW = evenCols * colStepPx;
+    const rows = Math.floor(canvas.height / rowStepPx);
+    const evenRows = rows - (rows % 2);
+    cropH = evenRows * rowStepPx;
+
+  } else {
+    // Grid off — centered square crop
+    cropW = cropH = Math.min(canvas.width, canvas.height);
+  }
+
+  // Center crop on canvas center (which is also the grid origin)
+  const sx = (canvas.width - cropW) / 2;
+  const sy = (canvas.height - cropH) / 2;
+
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = Math.round(cropW);
+  tempCanvas.height = Math.round(cropH);
+  const tempCtx = tempCanvas.getContext('2d');
+
+  // Fill background color
+  tempCtx.fillStyle = bgColor;
+  tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+  // Draw art on top (drawImage composites, unlike putImageData)
+  tempCtx.drawImage(canvas, sx, sy, cropW, cropH, 0, 0, tempCanvas.width, tempCanvas.height);
+
   const link = document.createElement('a');
   link.download = 'mandala.png';
-  link.href = canvas.toDataURL('image/png');
+  link.href = tempCanvas.toDataURL('image/png');
   link.click();
 
   // Re-overlay guides + grid
   drawAllOverlays();
 });
 
-// Keyboard shortcut: Ctrl/Cmd + Z for undo
+btnReset.addEventListener('click', () => {
+  // Reset all state to defaults
+  segments = 12;       segmentsInput.value = 12;   segmentsVal.textContent = 12;
+  mirror = true;       mirrorInput.checked = true;
+  showGuides = true;   guidesInput.checked = true;
+  brushSize = 6;       brushSizeInput.value = 6;   brushSizeVal.textContent = 6;
+  brushColor = '#ffffff'; brushColorInput.value = '#ffffff';
+  bgColor = '#0a0a12'; bgColorInput.value = '#0a0a12';
+  document.body.style.background = bgColor;
+
+  brushType = 'normal';  brushTypeInput.value = 'normal';
+  toolMode = 'brush';    toolModeInput.value = 'brush';
+  stampShape = 'circle';  stampShapeInput.value = 'circle';
+  stampAlign = false;     stampAlignInput.checked = false;
+  brushRotation = 0;      brushRotationInput.value = 0; brushRotationVal.textContent = 0;
+
+  stampShapeGroup.style.display = 'none';
+  stampAlignGroup.style.display = 'none';
+  brushTypeGroup.style.display  = '';
+
+  opacity = 1;           opacityInput.value = 100;  opacityVal.textContent = '1';
+  smoothing = 0.5;       smoothingInput.value = 50; smoothingVal.textContent = '0.5';
+
+  hueShift = 0;          hueShiftInput.value = 0;   hueShiftVal.textContent = 0;
+  glow = 0;              glowInput.value = 0;       glowVal.textContent = 0;
+  radialFade = 0;        radialFadeInput.value = 0; radialFadeVal.textContent = 0;
+
+  rotationOffset = 0;    rotationOffsetInput.value = 0;  rotationOffsetVal.textContent = 0;
+  spiralTwist = 0;       spiralTwistInput.value = 0;     spiralTwistVal.textContent = '0.00';
+  scaleDecay = 1.0;      scaleDecayInput.value = 100;    scaleDecayVal.textContent = '1.00';
+
+  gridType = 'off';      gridTypeInput.value = 'off';
+  gridSize = 80;         gridSizeInput.value = 80;  gridSizeVal.textContent = 80;
+  gridCentersCache = null; gridCentersKey = '';
+
+  // Redraw overlays with new settings
+  refreshGuides();
+});
+
+// Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Shift') shiftDown = true;
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
     undo();
     finishStroke();
   }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'Shift') shiftDown = false;
 });
 
 // ── Toggle controls panel ───────────────────────────────────
@@ -768,10 +1291,17 @@ canvas.addEventListener('mouseup', (e) => {
   onPointerUp(e);
   finishStroke();
 });
+canvas.addEventListener('mouseenter', () => {
+  cursorOnCanvas = true;
+});
 canvas.addEventListener('mouseleave', (e) => {
+  cursorOnCanvas = false;
   if (drawing) {
     onPointerUp(e);
     finishStroke();
+  } else {
+    // Clear stale cursor preview
+    refreshGuides();
   }
 });
 

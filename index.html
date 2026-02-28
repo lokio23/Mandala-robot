@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Mr. Mandala</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -46,10 +46,55 @@
     <!-- Grid size -->
     <div class="control-group">
       <label for="grid-size">Grid size: <span id="grid-size-val">80</span></label>
-      <input type="range" id="grid-size" min="20" max="200" value="80">
+      <input type="range" id="grid-size" min="20" max="500" value="80">
     </div>
 
     <hr>
+
+    <!-- Tool mode -->
+    <div class="control-group">
+      <label for="tool-mode">Tool</label>
+      <select id="tool-mode">
+        <option value="brush">Brush</option>
+        <option value="stamp">Stamp</option>
+      </select>
+    </div>
+
+    <!-- Brush type -->
+    <div class="control-group" id="brush-type-group">
+      <label for="brush-type">Brush type</label>
+      <select id="brush-type">
+        <option value="normal">Normal</option>
+        <option value="dashed">Dashed</option>
+        <option value="dotted">Dotted</option>
+        <option value="airbrush">Airbrush</option>
+      </select>
+    </div>
+
+    <!-- Stamp shape (hidden by default, shown when stamp tool selected) -->
+    <div class="control-group" id="stamp-shape-group" style="display:none;">
+      <label for="stamp-shape">Stamp shape</label>
+      <select id="stamp-shape">
+        <option value="circle">Circle</option>
+        <option value="star">Star</option>
+        <option value="triangle">Triangle</option>
+        <option value="diamond">Diamond</option>
+        <option value="hexagon">Hexagon</option>
+        <option value="petal">Petal</option>
+      </select>
+    </div>
+
+    <!-- Align stamp to segment (hidden by default, shown when stamp tool selected) -->
+    <div class="control-group toggle-row" id="stamp-align-group" style="display:none;">
+      <label for="stamp-align">Align to segment</label>
+      <input type="checkbox" id="stamp-align">
+    </div>
+
+    <!-- Brush/stamp rotation -->
+    <div class="control-group">
+      <label for="brush-rotation">Rotation: <span id="brush-rotation-val">0</span>&deg;</label>
+      <input type="range" id="brush-rotation" min="0" max="360" value="0">
+    </div>
 
     <!-- Brush size -->
     <div class="control-group">
@@ -61,6 +106,12 @@
     <div class="control-group">
       <label for="brush-color">Color</label>
       <input type="color" id="brush-color" value="#ffffff">
+    </div>
+
+    <!-- Background color -->
+    <div class="control-group">
+      <label for="bg-color">Background</label>
+      <input type="color" id="bg-color" value="#0a0a12">
     </div>
 
     <!-- Opacity -->
@@ -126,6 +177,9 @@
       <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
       <button id="btn-clear" title="Clear canvas">Clear</button>
       <button id="btn-save" title="Save as PNG">Save PNG</button>
+    </div>
+    <div class="button-row">
+      <button id="btn-reset" title="Reset all settings to defaults">Reset Settings</button>
     </div>
   </div>
 
